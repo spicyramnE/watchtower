@@ -30,7 +30,7 @@ GitHub Actions CI/CD pipeline, and backed by PostgreSQL and Redis.
 | # | Phase | Status |
 |---|-------|--------|
 | 0 | Environment & Tooling Setup | ✅ |
-| 1 | Spring Boot Skeleton & Core CRUD | ⬜ |
+| 1 | Spring Boot Skeleton & Core CRUD | ✅ |
 | 2 | Data Model Completion & Synthetic Incident Generation | ⬜ |
 | 3 | MCP Tool Layer | ⬜ |
 | 4 | Retrieval-Augmented Generation (Runbook Search) | ⬜ |
@@ -45,7 +45,7 @@ GitHub Actions CI/CD pipeline, and backed by PostgreSQL and Redis.
 
 ### Prerequisites
 
-- JDK 21+ (project targets 21; a newer installed JDK is fine)
+- JDK 21 ([Eclipse Temurin](https://adoptium.net/) recommended — see note below)
 - Docker Desktop
 - Git
 
@@ -59,4 +59,35 @@ docker ps                 # both containers should show 'Up'
 docker exec -it watchtower-postgres psql -U watchtower_user -d watchtower
 ```
 
-Further setup instructions are added as each phase lands.
+### Running the app
+
+```bash
+./mvnw spring-boot:run
+```
+
+App runs on `http://localhost:8080`. Try it:
+
+```bash
+curl -X POST http://localhost:8080/incidents \
+  -H "Content-Type: application/json" \
+  -d '{"source":"github-actions","serviceName":"payments-service","severity":"HIGH","rawPayload":"{\"error\":\"OOMKilled\"}"}'
+
+curl http://localhost:8080/incidents
+```
+
+Run the test suite (also exercises the endpoints via MockMvc, against real Postgres):
+
+```bash
+./mvnw test
+```
+
+### Windows notes
+
+- **Use JDK 21, not the newest available JDK.** Very new JDK builds have an
+  unrelated NIO regression on some Windows setups that breaks the embedded
+  server's socket handling. JDK 21 (LTS) avoids it.
+- pgjdbc reads its `TimeZone` startup parameter from the JVM's default
+  timezone. Some Windows locales resolve this to the deprecated `Asia/Calcutta`
+  alias, which Postgres 17 rejects outright at connection time. `WatchtowerApplication.main()`
+  forces `UTC` for the running app; the Surefire plugin config in `pom.xml`
+  does the same for the test JVM (tests don't go through `main()`).
