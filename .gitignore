@@ -1,0 +1,36 @@
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# IntelliJ
+.idea/
+*.iml
+*.iws
+out/
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Node / Next.js (Phase 8+)
+node_modules/
+.next/
+.turbo/
+
+# Build artifacts
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+build/
+dist/
