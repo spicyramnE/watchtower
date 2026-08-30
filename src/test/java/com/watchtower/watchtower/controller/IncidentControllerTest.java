@@ -9,6 +9,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.HashSet;
+import java.util.Set;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -104,5 +108,27 @@ class IncidentControllerTest {
     void listIncidents_withInvalidStatus_returns400() throws Exception {
         mockMvc.perform(get("/incidents").param("status", "NOT_A_STATUS"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void simulateIncident_returns201WithNewSyntheticIncident() throws Exception {
+        mockMvc.perform(post("/incidents/simulate"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.id", greaterThan(0)))
+                .andExpect(jsonPath("$.status").value("NEW"))
+                .andExpect(jsonPath("$.source").value("github-actions"));
+    }
+
+    @Test
+    void simulateIncident_calledRepeatedly_producesVariedScenarios() throws Exception {
+        Set<String> distinctPayloads = new HashSet<>();
+        for (int i = 0; i < 20; i++) {
+            String body = mockMvc.perform(post("/incidents/simulate"))
+                    .andExpect(status().isCreated())
+                    .andReturn().getResponse().getContentAsString();
+            distinctPayloads.add(objectMapper.readTree(body).get("rawPayload").asText());
+        }
+        // 5 scenario templates x 5 service names - 20 draws should hit well over 1 distinct payload
+        assertThat(distinctPayloads.size()).isGreaterThan(1);
     }
 }

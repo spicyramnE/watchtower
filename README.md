@@ -31,7 +31,7 @@ GitHub Actions CI/CD pipeline, and backed by PostgreSQL and Redis.
 |---|-------|--------|
 | 0 | Environment & Tooling Setup | ✅ |
 | 1 | Spring Boot Skeleton & Core CRUD | ✅ |
-| 2 | Data Model Completion & Synthetic Incident Generation | ⬜ |
+| 2 | Data Model Completion & Synthetic Incident Generation | ✅ |
 | 3 | MCP Tool Layer | ⬜ |
 | 4 | Retrieval-Augmented Generation (Runbook Search) | ⬜ |
 | 5 | Agent Reasoning Core (ReAct Loop) | ⬜ |
@@ -73,7 +73,14 @@ curl -X POST http://localhost:8080/incidents \
   -d '{"source":"github-actions","serviceName":"payments-service","severity":"HIGH","rawPayload":"{\"error\":\"OOMKilled\"}"}'
 
 curl http://localhost:8080/incidents
+
+# Dev/demo-only: generates a realistic synthetic incident
+curl -X POST http://localhost:8080/incidents/simulate
 ```
+
+On first startup, the app seeds `src/main/resources/runbooks/*.md` into the
+`runbooks` table (12 documents covering common CI/CD incident types) - this
+is the knowledge base RAG search will query against in Phase 4.
 
 Run the test suite (also exercises the endpoints via MockMvc, against real Postgres):
 
