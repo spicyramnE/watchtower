@@ -44,6 +44,15 @@ public class Incident {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    @Column(name = "proposed_action", columnDefinition = "TEXT")
+    private String proposedAction;
+
+    @Column(name = "confidence_score")
+    private Double confidenceScore;
+
+    @Column(columnDefinition = "TEXT")
+    private String rationale;
+
     protected Incident() {
         // JPA
     }
@@ -102,5 +111,29 @@ public class Incident {
 
     public Instant getUpdatedAt() {
         return updatedAt;
+    }
+
+    public String getProposedAction() {
+        return proposedAction;
+    }
+
+    public void setProposedAction(String proposedAction) {
+        this.proposedAction = proposedAction;
+    }
+
+    public Double getConfidenceScore() {
+        return confidenceScore;
+    }
+
+    public void setConfidenceScore(Double confidenceScore) {
+        this.confidenceScore = confidenceScore;
+    }
+
+    public String getRationale() {
+        return rationale;
+    }
+
+    public void setRationale(String rationale) {
+        this.rationale = rationale;
     }
 }
