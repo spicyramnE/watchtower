@@ -33,6 +33,15 @@ public class Runbook {
     @Column(name = "tag")
     private List<String> tags = new ArrayList<>();
 
+    /**
+     * JSON-encoded embedding vector (e.g. "[0.012,-0.045,...]"), computed
+     * once by RunbookSeeder and cached here so the app doesn't re-embed on
+     * every restart. Null until indexing has run (e.g. no API key configured
+     * yet) - callers must treat that as "not yet searchable", not an error.
+     */
+    @Column(columnDefinition = "TEXT")
+    private String embedding;
+
     protected Runbook() {
         // JPA
     }
@@ -57,5 +66,13 @@ public class Runbook {
 
     public List<String> getTags() {
         return tags;
+    }
+
+    public String getEmbedding() {
+        return embedding;
+    }
+
+    public void setEmbedding(String embedding) {
+        this.embedding = embedding;
     }
 }

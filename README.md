@@ -48,9 +48,46 @@ The five tools:
 |---|---|
 | `get_recent_logs` | `LogService` (synthetic log lines) |
 | `get_pipeline_history` | `PipelineHistoryService` (synthetic build/deploy outcomes) |
-| `search_runbook` | `RunbookSearchService` (keyword-overlap scoring for now — Phase 4 upgrades this to embeddings) |
+| `search_runbook` | `RunbookSearchService` — Voyage AI embeddings + cosine similarity (see below) |
 | `propose_remediation` | `RemediationService` — moves an incident to `AWAITING_APPROVAL` |
 | `execute_remediation` | `RemediationService` — simulated execution; Phase 6 adds the human approval gate in front of it |
+
+### RAG: why Voyage AI, and in-memory over pgvector
+
+`search_runbook` started (Phase 3) as keyword-overlap scoring - it could only
+match queries that shared literal words with a runbook. Phase 4 replaced it
+with real semantic search: [Voyage AI](https://www.voyageai.com) embeddings +
+cosine similarity, computed in-memory rather than via pgvector.
+
+- **Why Voyage AI for embeddings, not Claude:** Anthropic doesn't offer an
+  embeddings API - Claude is a generation model, not a retrieval one - and
+  Voyage is Anthropic's recommended embedding partner. Training a custom
+  embedding model was never in scope: that's a multi-month ML research
+  problem (billions of training pairs, GPU clusters) orthogonal to what RAG
+  actually tests, which is the retrieval pipeline around a pretrained model -
+  the same reason this project uses Postgres instead of writing a database.
+- **Why in-memory cosine similarity over pgvector:** with 12 runbooks, a
+  dedicated vector index (pgvector) buys nothing - a linear scan over a
+  dozen vectors is microseconds. `VectorMath.cosineSimilarity` is a ~15-line
+  method, easy to explain and test in isolation. pgvector becomes the right
+  call once the corpus is large enough that a linear scan matters; see
+  `docker-compose.yml`/tech stack notes - this is a documented upgrade path,
+  not a limitation nobody considered.
+- **Pipeline:** `RunbookSeeder` embeds each runbook's content once at
+  startup (`input_type: document`) and caches the vector as a JSON string on
+  `Runbook.embedding`, so restarts don't re-call the API. At query time,
+  `RunbookSearchService` embeds the query (`input_type: query` - Voyage
+  embeds these two asymmetrically for better retrieval), scores every
+  candidate by cosine similarity, and filters anything below `MIN_SIMILARITY`
+  (0.25, empirically tuned) so an unrelated query returns nothing rather
+  than the "least bad" runbook.
+- **Verified with a real paraphrase query** (no shared words with any
+  runbook): `"my pod won't come up and health checks keep failing"` correctly
+  ranked *"What to do when a deployment times out"* first (score 0.54) -
+  something Phase 3's keyword matching could never have found.
+- **Graceful degradation:** if `VOYAGE_API_KEY` isn't set, indexing and
+  search both log a warning and return no results rather than failing
+  startup - see Local Development Setup below.
 
 ## Build Phases
 
@@ -60,7 +97,7 @@ The five tools:
 | 1 | Spring Boot Skeleton & Core CRUD | ✅ |
 | 2 | Data Model Completion & Synthetic Incident Generation | ✅ |
 | 3 | MCP Tool Layer | ✅ |
-| 4 | Retrieval-Augmented Generation (Runbook Search) | ⬜ |
+| 4 | Retrieval-Augmented Generation (Runbook Search) | ✅ |
 | 5 | Agent Reasoning Core (ReAct Loop) | ⬜ |
 | 6 | Approval Gating & Remediation Execution | ⬜ |
 | 7 | Authentication & RBAC | ⬜ |
@@ -75,6 +112,11 @@ The five tools:
 - JDK 21 ([Eclipse Temurin](https://adoptium.net/) recommended — see note below)
 - Docker Desktop
 - Git
+- A [Voyage AI](https://www.voyageai.com) API key (free tier) - only needed
+  for `search_runbook` to return real results; the app runs fine without it,
+  just with that one tool returning nothing. Set it as an environment
+  variable named `VOYAGE_API_KEY` - never commit it or put it in
+  `application.yml`.
 
 ### Infrastructure
 
@@ -106,8 +148,9 @@ curl -X POST http://localhost:8080/incidents/simulate
 ```
 
 On first startup, the app seeds `src/main/resources/runbooks/*.md` into the
-`runbooks` table (12 documents covering common CI/CD incident types) - this
-is the knowledge base RAG search will query against in Phase 4.
+`runbooks` table (12 documents covering common CI/CD incident types) and
+embeds each one via Voyage AI (if `VOYAGE_API_KEY` is set) - this is the
+knowledge base `search_runbook` semantically searches.
 
 The MCP server is exposed at `POST /mcp` (Streamable HTTP transport) once the
 app is running - Phase 5's ReAct loop is the first real client of it.
@@ -129,3 +172,11 @@ tools via their real registered protocol handlers, against real Postgres):
   alias, which Postgres 17 rejects outright at connection time. `WatchtowerApplication.main()`
   forces `UTC` for the running app; the Surefire plugin config in `pom.xml`
   does the same for the test JVM (tests don't go through `main()`).
+- Spring's default `RestClient` (used by `VoyageEmbeddingClient`) picks an
+  HTTP client backed by Java NIO, which opens an internal loopback selector
+  pipe - the same class of bug as the JDK regression above, and it breaks in
+  the same sandboxed environments. `VoyageEmbeddingClient` explicitly uses
+  `SimpleClientHttpRequestFactory` (classic `HttpURLConnection`, no NIO) to
+  avoid it. Apply the same fix to any future outbound HTTP client (e.g. the
+  Anthropic API client in Phase 5) if it hits the identical
+  "Unable to establish loopback connection" error.

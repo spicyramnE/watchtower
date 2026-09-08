@@ -19,5 +19,10 @@ spring:
         version: 0.1.0
         type: SYNC
 
+voyage:
+  api-key: ${VOYAGE_API_KEY:}
+  base-url: https://api.voyageai.com/v1
+  model: voyage-3.5-lite
+
 server:
   port: 8080
