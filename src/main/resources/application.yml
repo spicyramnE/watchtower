@@ -1,6 +1,12 @@
 spring:
   application:
     name: watchtower
+  autoconfigure:
+    # Auth is handled entirely by AuthController/JwtService against our own
+    # User table, not Spring Security's UserDetailsService/AuthenticationManager
+    # machinery. Without this, Boot auto-configures an unused in-memory user
+    # and logs a generated dev password on every startup.
+    exclude: org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration
   datasource:
     url: jdbc:postgresql://localhost:5432/watchtower
     username: watchtower_user
@@ -28,6 +34,10 @@ groq:
   api-key: ${GROQ_API_KEY:}
   base-url: https://api.groq.com/openai/v1
   model: openai/gpt-oss-120b
+
+jwt:
+  secret: ${JWT_SECRET:}
+  expiration-minutes: 60
 
 server:
   port: 8080

@@ -2,7 +2,7 @@
 
 **Agentic AI CI/CD Incident Response Platform**
 
-**Progress: Phase 6 of 10 complete** — see [Build Phases](#build-phases) below for the full roadmap.
+**Progress: Phase 7 of 10 complete** — see [Build Phases](#build-phases) below for the full roadmap.
 
 Watchtower is an agentic AI incident-response backend for CI/CD pipelines. It ingests
 pipeline failures and production alerts, reasons over logs, pipeline history, and
@@ -171,15 +171,58 @@ Phase 6 adds the human side of the loop: `GET /incidents/awaiting-approval`,
   incident is marked REJECTED with the reviewer's reasoning captured"
   without adding a new column to `Incident`, since the decision log already
   captures free-text reasoning for every other step.
-- **No auth yet** - these endpoints are open, matching the doc's own
-  phasing ("via API for now"). Phase 7 adds JWT + the VIEWER/APPROVER role
-  check specifically on approve/reject.
+- **No auth in Phase 6** - these endpoints were open at the time, matching
+  the doc's own phasing ("via API for now"). Phase 7 (below) adds the JWT +
+  VIEWER/APPROVER role check specifically on approve/reject.
 - **Verified end-to-end against the live Groq API**: a synthetic incident
   taken through `simulate` → `diagnose` → `approve` produced the full
   `NEW → DIAGNOSING → AWAITING_APPROVAL → RESOLVED` lifecycle in one run,
   with a single 5-entry decision log spanning 3 agent evidence-gathering
   steps, the proposal, and the human approval - exactly the doc's Phase 6
   exit criteria.
+
+### Authentication & RBAC: stateless JWT, no Spring Security machinery beyond the filter
+
+Phase 7 adds `POST /auth/login` and gates the whole API behind it: any
+authenticated user (VIEWER or APPROVER) can view incidents and decision
+logs; only APPROVER can hit approve/reject.
+
+- **Auth is handled entirely by application code, not Spring Security's
+  `UserDetailsService`/`AuthenticationManager`.** `AuthController` checks
+  the submitted credentials against `User` (BCrypt-hashed passwords) itself
+  and, on success, hands back a JWT from `JwtService` - there's no
+  `AuthenticationProvider` chain to configure. `JwtAuthenticationFilter`
+  (one `OncePerRequestFilter`) is the only piece of the request pipeline
+  that touches tokens: it reads `Authorization: Bearer <jwt>`, validates
+  it, and populates the `SecurityContext` with the token's username and a
+  `ROLE_<role>` authority - `SecurityConfig`'s path rules do the rest.
+  `spring.autoconfigure.exclude`s Boot's `UserDetailsServiceAutoConfiguration`
+  accordingly, since it would otherwise auto-generate an unused in-memory
+  user and log a dev password on every startup.
+- **The role claim travels inside the JWT itself**, so authorization never
+  needs a database round-trip - the filter trusts the signed token's
+  `role` claim directly. Tampering with it invalidates the signature (see
+  `JwtServiceTest`), which is the whole point of signing it.
+- **The signing secret is a `JWT_SECRET` env var, SHA-256-hashed into a
+  valid 256-bit HS256 key** so any length string works, never a value
+  hardcoded in `application.yml`. If unset, `JwtService` generates a random
+  key for that process only (tokens won't validate across a restart) and
+  logs a warning - good enough for local dev, explicitly not for anything
+  further, matching the pattern of every other credential in this project.
+- **No registration endpoint exists** (the doc's own endpoint table only
+  lists `POST /auth/login`), so `UserSeeder` creates two demo accounts on
+  first startup - `viewer`/`viewer123` and `approver`/`approver123` - the
+  same "always demoable without extra setup" spirit as the synthetic
+  incident generator. These are documented, not secret; don't reuse them
+  for anything real.
+- **Verified against the real, signed-token flow, not just
+  `@WithMockUser`:** `@WithMockUser` pre-populates the security context
+  before a test request, which proves the authorization *rules* work but
+  never actually exercises `JwtAuthenticationFilter`'s own header-parsing
+  code. One test logs in for a real token via `/auth/login`, uses it as a
+  real `Authorization` header, confirms a VIEWER token is rejected from
+  `/approve` with 403, and confirms an APPROVER token succeeds - closing
+  the loop on the whole chain together, not each piece in isolation.
 
 ## Build Phases
 
@@ -192,7 +235,7 @@ Phase 6 adds the human side of the loop: `GET /incidents/awaiting-approval`,
 | 4 | Retrieval-Augmented Generation (Runbook Search) | ✅ |
 | 5 | Agent Reasoning Core (ReAct Loop) | ✅ |
 | 6 | Approval Gating & Remediation Execution | ✅ |
-| 7 | Authentication & RBAC | ⬜ |
+| 7 | Authentication & RBAC | ✅ |
 | 8 | Frontend Dashboard | ⬜ |
 | 9 | CI/CD & GCP Deployment | ⬜ |
 | 10 | Testing, Documentation & Interview Readiness | ⬜ |
@@ -213,6 +256,9 @@ Phase 6 adds the human side of the loop: `GET /incidents/awaiting-approval`,
   `POST /incidents/{id}/diagnose` to actually run; without it, that endpoint
   returns immediately saying so. Set it as `GROQ_API_KEY`, same rule as
   above.
+- Optionally, a `JWT_SECRET` env var (any string) for token signing beyond
+  a single local run - see Phase 7 architecture notes above. Not required
+  to get started.
 
 ### Infrastructure
 
@@ -230,26 +276,34 @@ docker exec -it watchtower-postgres psql -U watchtower_user -d watchtower
 ./mvnw spring-boot:run
 ```
 
-App runs on `http://localhost:8080`. Try it:
+App runs on `http://localhost:8080`. Every `/incidents/**` route now needs a
+JWT. Log in first (demo accounts seeded on first startup - see Phase 7 notes
+above), then pass the token on every subsequent request:
 
 ```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"approver","password":"approver123"}' | jq -r .token)
+
 curl -X POST http://localhost:8080/incidents \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"source":"github-actions","serviceName":"payments-service","severity":"HIGH","rawPayload":"{\"error\":\"OOMKilled\"}"}'
 
-curl http://localhost:8080/incidents
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/incidents
 
 # Dev/demo-only: generates a realistic synthetic incident
-curl -X POST http://localhost:8080/incidents/simulate
+curl -X POST http://localhost:8080/incidents/simulate -H "Authorization: Bearer $TOKEN"
 
 # Hand a diagnosed incident to the agent, then see its full reasoning trace
-curl -X POST http://localhost:8080/incidents/{id}/diagnose
-curl http://localhost:8080/incidents/{id}/decision-log
+curl -X POST http://localhost:8080/incidents/{id}/diagnose -H "Authorization: Bearer $TOKEN"
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/incidents/{id}/decision-log
 
-# Review and act on the agent's proposal
-curl http://localhost:8080/incidents/awaiting-approval
-curl -X POST http://localhost:8080/incidents/{id}/approve
+# Review and act on the agent's proposal - approve/reject need an APPROVER token
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/incidents/awaiting-approval
+curl -X POST http://localhost:8080/incidents/{id}/approve -H "Authorization: Bearer $TOKEN"
 curl -X POST http://localhost:8080/incidents/{id}/reject \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"reason":"Too risky during business hours"}'
 ```

@@ -11,6 +11,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.security.test.context.support.WithAnonymousUser;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.HashSet;
@@ -31,6 +33,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
+@WithMockUser // any authenticated user satisfies every route here except approve/reject - overridden per-test where role matters
 class IncidentControllerTest {
 
     @Autowired
@@ -143,6 +146,7 @@ class IncidentControllerTest {
     }
 
     @Test
+    @WithMockUser(roles = "APPROVER")
     void fullLifecycle_proposeThenApprove_resolvesTheIncidentAndListsInAwaitingApprovalUntilThen() throws Exception {
         Incident incident = incidentRepository.save(
                 new Incident("github-actions", "payments-service", Severity.HIGH, "{\"error\":\"OOMKilled\"}"));
@@ -162,6 +166,7 @@ class IncidentControllerTest {
     }
 
     @Test
+    @WithMockUser(roles = "APPROVER")
     void rejectIncident_withReason_marksRejectedAndLogsIt() throws Exception {
         Incident incident = incidentRepository.save(
                 new Incident("github-actions", "payments-service", Severity.HIGH, "{}"));
@@ -180,6 +185,7 @@ class IncidentControllerTest {
     }
 
     @Test
+    @WithMockUser(roles = "APPROVER")
     void rejectIncident_withoutReason_returns400() throws Exception {
         Incident incident = incidentRepository.save(
                 new Incident("github-actions", "payments-service", Severity.HIGH, "{}"));
@@ -192,11 +198,85 @@ class IncidentControllerTest {
     }
 
     @Test
+    @WithMockUser(roles = "APPROVER")
     void approveIncident_withoutPendingProposal_returns409() throws Exception {
         Incident incident = incidentRepository.save(
                 new Incident("github-actions", "payments-service", Severity.HIGH, "{}"));
 
         mockMvc.perform(post("/incidents/" + incident.getId() + "/approve"))
                 .andExpect(status().isConflict());
+    }
+
+    @Test
+    @WithAnonymousUser
+    void listIncidents_whenUnauthenticated_returns401() throws Exception {
+        mockMvc.perform(get("/incidents"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @WithMockUser(roles = "VIEWER")
+    void approveIncident_asViewer_returns403() throws Exception {
+        Incident incident = incidentRepository.save(
+                new Incident("github-actions", "payments-service", Severity.HIGH, "{}"));
+        remediationService.proposeRemediation(incident.getId(), "action", 0.8, "rationale");
+
+        mockMvc.perform(post("/incidents/" + incident.getId() + "/approve"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithMockUser(roles = "VIEWER")
+    void rejectIncident_asViewer_returns403() throws Exception {
+        Incident incident = incidentRepository.save(
+                new Incident("github-actions", "payments-service", Severity.HIGH, "{}"));
+        remediationService.proposeRemediation(incident.getId(), "action", 0.8, "rationale");
+
+        mockMvc.perform(post("/incidents/" + incident.getId() + "/reject")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"no\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    /**
+     * Everything above uses @WithMockUser, which pre-populates the
+     * SecurityContext before the request - it never actually exercises
+     * JwtAuthenticationFilter's own Bearer-header parsing. This test does:
+     * a real login for a real token, then a real Authorization header, to
+     * prove the whole chain works together, not just each piece in
+     * isolation.
+     */
+    @Test
+    @WithAnonymousUser
+    void realJwtFromLogin_grantsAccessToProtectedEndpoint_andApproverTokenCanApprove() throws Exception {
+        String viewerLoginBody = mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"viewer\",\"password\":\"viewer123\"}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String viewerToken = objectMapper.readTree(viewerLoginBody).get("token").asText();
+
+        mockMvc.perform(get("/incidents").header("Authorization", "Bearer " + viewerToken))
+                .andExpect(status().isOk());
+
+        Incident incident = incidentRepository.save(
+                new Incident("github-actions", "payments-service", Severity.HIGH, "{}"));
+        remediationService.proposeRemediation(incident.getId(), "action", 0.8, "rationale");
+
+        mockMvc.perform(post("/incidents/" + incident.getId() + "/approve")
+                        .header("Authorization", "Bearer " + viewerToken))
+                .andExpect(status().isForbidden());
+
+        String approverLoginBody = mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"approver\",\"password\":\"approver123\"}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String approverToken = objectMapper.readTree(approverLoginBody).get("token").asText();
+
+        mockMvc.perform(post("/incidents/" + incident.getId() + "/approve")
+                        .header("Authorization", "Bearer " + approverToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RESOLVED"));
     }
 }
