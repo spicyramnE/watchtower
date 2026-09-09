@@ -2,7 +2,7 @@
 
 **Agentic AI CI/CD Incident Response Platform**
 
-**Progress: Phase 7 of 10 complete** — see [Build Phases](#build-phases) below for the full roadmap.
+**Progress: Phase 8 of 10 complete** — see [Build Phases](#build-phases) below for the full roadmap.
 
 Watchtower is an agentic AI incident-response backend for CI/CD pipelines. It ingests
 pipeline failures and production alerts, reasons over logs, pipeline history, and
@@ -224,6 +224,54 @@ logs; only APPROVER can hit approve/reject.
   `/approve` with 403, and confirms an APPROVER token succeeds - closing
   the loop on the whole chain together, not each piece in isolation.
 
+### Frontend Dashboard: Next.js 16, client-rendered, talking straight to the API
+
+`frontend/` is a separate Next.js app (TypeScript, Tailwind, App Router) in
+the same repo - a small monorepo, not a separate project - that makes the
+agent's reasoning visible: incident list, incident detail with the
+decision-trace timeline, and an APPROVER-only approval queue.
+
+- **Every page is a Client Component fetching directly from the Spring Boot
+  API** (`frontend/src/lib/api.ts`), not Next.js Server Components/Route
+  Handlers proxying it. The JWT lives in `localStorage` (`AuthProvider` in
+  `lib/auth-context.tsx`) and gets attached as an `Authorization` header on
+  every request - there's no server-side session to keep in sync, so this is
+  the simpler choice for a dashboard whose entire job is showing another
+  service's live state, matching the doc's "functional and clean over highly
+  polished" design priority. CORS is opened on the backend
+  (`SecurityConfig.corsConfigurationSource`) specifically for
+  `http://localhost:3000` rather than wildcarded, since the `Authorization`
+  header is a credential.
+- **The decision-trace timeline is deliberately the most detailed piece of
+  UI in the project** (`app/incidents/[id]/page.tsx`), per the doc's own
+  design priority - every step's tool name, input, output, and reasoning is
+  rendered, with JSON pretty-printed and human governance steps
+  (`human_approval`/`human_rejection`) visually distinguished from agent
+  tool calls in the same list, continuing Phase 6's "one unified log" idea
+  into the UI itself.
+- **Role-aware, not just auth-aware:** Approve/Reject controls only render
+  when `role === "APPROVER"` *and* the incident is `AWAITING_APPROVAL` -
+  checked client-side for UI purposes, but this is a convenience, not the
+  security boundary; the backend's own role check on those endpoints
+  (Phase 7) is what actually enforces it, so a VIEWER can't just edit
+  `localStorage` and approve something.
+- **This version of Next.js (16.3) has real, documented breaking changes
+  from older conventions** - e.g. `params` in dynamic routes is now a
+  Promise, and typed helpers like `LayoutProps<'/route'>` are
+  auto-generated. Per `frontend/AGENTS.md` (written by `next dev` itself),
+  the bundled docs in `frontend/node_modules/next/dist/docs/` were read
+  before writing route code, rather than assuming older Next.js patterns
+  still applied - the same "verify against ground truth, not training data"
+  approach used for the MCP SDK, Voyage, Groq, and jjwt integrations
+  earlier in this project.
+- **Verified against the live stack end-to-end through the actual browser
+  UI**, not just component-level checks: logged in as `approver`, simulated
+  a fresh incident, clicked "Diagnose with agent" (a real Groq API call),
+  watched the 4-step reasoning trace render with real tool inputs/outputs,
+  clicked Approve, and confirmed the status flipped to `RESOLVED` with a
+  5th `human_approval` step appended to the same trace - all against the
+  real Postgres-backed API, no mocked data.
+
 ## Build Phases
 
 | # | Phase | Status |
@@ -236,7 +284,7 @@ logs; only APPROVER can hit approve/reject.
 | 5 | Agent Reasoning Core (ReAct Loop) | ✅ |
 | 6 | Approval Gating & Remediation Execution | ✅ |
 | 7 | Authentication & RBAC | ✅ |
-| 8 | Frontend Dashboard | ⬜ |
+| 8 | Frontend Dashboard | ✅ |
 | 9 | CI/CD & GCP Deployment | ⬜ |
 | 10 | Testing, Documentation & Interview Readiness | ⬜ |
 
@@ -259,6 +307,7 @@ logs; only APPROVER can hit approve/reject.
 - Optionally, a `JWT_SECRET` env var (any string) for token signing beyond
   a single local run - see Phase 7 architecture notes above. Not required
   to get started.
+- Node.js 20.9+ and npm, only for the frontend (`frontend/`).
 
 ### Infrastructure
 
@@ -315,6 +364,25 @@ knowledge base `search_runbook` semantically searches.
 
 The MCP server is exposed at `POST /mcp` (Streamable HTTP transport) once the
 app is running - Phase 5's ReAct loop is the first real client of it.
+
+### Running the frontend
+
+With the backend already running (above):
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000` - it redirects to `/login`. Use one of the demo
+accounts (`viewer`/`viewer123` or `approver`/`approver123`). From there:
+view the incident list, click an incident to see its detail and decision
+trace, click "Diagnose with agent" on a `NEW` incident to trigger a real
+agent run, and (as `approver`) approve/reject from either the incident page
+or the Approval Queue. The dashboard talks directly to `localhost:8080` -
+`NEXT_PUBLIC_API_BASE_URL` in `frontend/.env.local` overrides that if the
+backend runs somewhere else.
 
 Run the test suite (also exercises the endpoints via MockMvc, and the MCP
 tools via their real registered protocol handlers, against real Postgres):
