@@ -24,5 +24,10 @@ voyage:
   base-url: https://api.voyageai.com/v1
   model: voyage-3.5-lite
 
+groq:
+  api-key: ${GROQ_API_KEY:}
+  base-url: https://api.groq.com/openai/v1
+  model: openai/gpt-oss-120b
+
 server:
   port: 8080

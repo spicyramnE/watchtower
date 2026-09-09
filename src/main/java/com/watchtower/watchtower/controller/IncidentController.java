@@ -1,9 +1,13 @@
 package com.watchtower.watchtower.controller;
 
+import com.watchtower.watchtower.agent.AgentReasoningService;
 import com.watchtower.watchtower.dto.CreateIncidentRequest;
+import com.watchtower.watchtower.dto.DecisionLogEntryResponse;
+import com.watchtower.watchtower.dto.DiagnosisResult;
 import com.watchtower.watchtower.dto.IncidentResponse;
 import com.watchtower.watchtower.entity.Incident;
 import com.watchtower.watchtower.entity.IncidentStatus;
+import com.watchtower.watchtower.repository.AgentDecisionLogRepository;
 import com.watchtower.watchtower.service.IncidentService;
 import com.watchtower.watchtower.service.IncidentSimulationService;
 import jakarta.validation.Valid;
@@ -23,11 +27,17 @@ public class IncidentController {
 
     private final IncidentService incidentService;
     private final IncidentSimulationService incidentSimulationService;
+    private final AgentReasoningService agentReasoningService;
+    private final AgentDecisionLogRepository decisionLogRepository;
 
     public IncidentController(IncidentService incidentService,
-                               IncidentSimulationService incidentSimulationService) {
+                               IncidentSimulationService incidentSimulationService,
+                               AgentReasoningService agentReasoningService,
+                               AgentDecisionLogRepository decisionLogRepository) {
         this.incidentService = incidentService;
         this.incidentSimulationService = incidentSimulationService;
+        this.agentReasoningService = agentReasoningService;
+        this.decisionLogRepository = decisionLogRepository;
     }
 
     @PostMapping("/incidents")
@@ -56,6 +66,19 @@ public class IncidentController {
     public List<IncidentResponse> listIncidents(@RequestParam(required = false) IncidentStatus status) {
         return incidentService.listIncidents(status).stream()
                 .map(IncidentResponse::from)
+                .toList();
+    }
+
+    @PostMapping("/incidents/{id}/diagnose")
+    public DiagnosisResult diagnoseIncident(@PathVariable Long id) {
+        return agentReasoningService.diagnose(id);
+    }
+
+    @GetMapping("/incidents/{id}/decision-log")
+    public List<DecisionLogEntryResponse> getDecisionLog(@PathVariable Long id) {
+        incidentService.getIncident(id); // 404s if the incident doesn't exist
+        return decisionLogRepository.findByIncidentIdOrderByStepNumberAsc(id).stream()
+                .map(DecisionLogEntryResponse::from)
                 .toList();
     }
 }

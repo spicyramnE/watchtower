@@ -4,10 +4,15 @@
 
 Watchtower is an agentic AI incident-response backend for CI/CD pipelines. It ingests
 pipeline failures and production alerts, reasons over logs, pipeline history, and
-runbooks using a ReAct-style agent loop powered by the Anthropic Claude API and the
-Model Context Protocol (MCP), and proposes remediation actions that require human
-approval before execution. It is built on Spring Boot, deployed to GCP Cloud Run via a
-GitHub Actions CI/CD pipeline, and backed by PostgreSQL and Redis.
+runbooks using a ReAct-style agent loop and the Model Context Protocol (MCP), and
+proposes remediation actions that require human approval before execution. It is built
+on Spring Boot, deployed to GCP Cloud Run via a GitHub Actions CI/CD pipeline, and
+backed by PostgreSQL and Redis.
+
+> **Note on the reasoning model:** the original project spec called for the Anthropic
+> Claude API here. This build uses [Groq](https://groq.com) (an open-weight model host,
+> currently `openai/gpt-oss-120b`) instead - a deliberate deviation, not an oversight.
+> See "Why Groq instead of Claude" below for the reasoning and its trade-offs.
 
 > **Not to be confused with** [Containrrr/Watchtower](https://github.com/containrrr/watchtower),
 > an unrelated open-source Docker container auto-updater.
@@ -50,7 +55,7 @@ The five tools:
 | `get_pipeline_history` | `PipelineHistoryService` (synthetic build/deploy outcomes) |
 | `search_runbook` | `RunbookSearchService` — Voyage AI embeddings + cosine similarity (see below) |
 | `propose_remediation` | `RemediationService` — moves an incident to `AWAITING_APPROVAL` |
-| `execute_remediation` | `RemediationService` — simulated execution; Phase 6 adds the human approval gate in front of it |
+| `execute_remediation` | `RemediationService` — simulated execution; Phase 6 adds the human approval gate in front of it. **Never offered to the agent itself** — see Phase 5 notes below |
 
 ### RAG: why Voyage AI, and in-memory over pgvector
 
@@ -89,6 +94,57 @@ cosine similarity, computed in-memory rather than via pgvector.
   search both log a warning and return no results rather than failing
   startup - see Local Development Setup below.
 
+### The ReAct loop, and why Groq instead of Claude
+
+`AgentReasoningService` is the heart of the project: given an incident, it lets
+a model reason step by step, call tools to gather real evidence, and conclude
+with a grounded diagnosis - the classic ReAct (Reason + Act) pattern.
+
+- **Why Groq instead of the Anthropic Claude API the doc specifies:** this was
+  an explicit, informed choice, not a default - Anthropic's API is not free,
+  and Groq's free tier removed that barrier entirely for building and testing
+  this phase. The trade-off is real and worth being upfront about in an
+  interview: Groq hosts *open-weight* models (currently
+  `openai/gpt-oss-120b`), not Claude, so the resume story is "an agent built
+  against an OpenAI-compatible tool-calling API, currently served by Groq"
+  rather than "the Claude API" specifically. Swapping providers is a small,
+  contained change (`GroqClient` is the only thing that would need to change
+  to point at Anthropic's Messages API instead), since the agent loop itself
+  is written against a standard tool-calling contract, not anything
+  Groq-specific.
+- **The loop:** each incident gets a system prompt plus an evidence summary,
+  and the model is offered exactly four tools: `get_recent_logs`,
+  `get_pipeline_history`, `search_runbook`, and `propose_remediation`. It's
+  instructed to gather evidence before concluding, and to conclude *by
+  calling* `propose_remediation` - so the "final diagnosis" the doc describes
+  (a recommended action, confidence score, and rationale) is literally that
+  tool call's own arguments, reusing Phase 3's `RemediationService` rather
+  than inventing a second, parallel "diagnosis" concept.
+- **`execute_remediation` is deliberately never offered to the model.** The
+  four tools the agent sees are a hard-coded allowlist
+  (`AgentReasoningService.AGENT_TOOL_NAMES`), not "all registered MCP tools
+  minus one" - so this can't silently regress if a future tool is added. If
+  the model somehow still names `execute_remediation` in a tool call, the
+  loop blocks it, logs the attempt, and tells the model it isn't permitted,
+  without ever invoking it. This is the human-in-the-loop design principle
+  enforced in code, not just left to Phase 6's API-level gating.
+- **Iteration cap:** hard-capped at 5 steps. If the model never calls
+  `propose_remediation` within that budget, the loop stops, logs a clear
+  "iteration cap reached" decision-log entry, and returns `concluded: false`
+  - visibly inconclusive, never a silent failure or an infinite loop.
+- **Every step is logged** to `AgentDecisionLog` (step number, tool name,
+  input, output) - this is what `GET /incidents/{id}/decision-log` returns,
+  and it's the explainability artifact the eventual dashboard (Phase 8)
+  visualizes.
+- **Verified against the real Groq API** across 4 different synthetic
+  incident types (rollback failure, OOM crash, flaky test, dependency
+  failure) - each correctly gathered 2-3 pieces of evidence before
+  concluding, and every rationale cited specifics from the actual tool
+  output (e.g. "pipeline history shows v1.14.1 was previously successful"),
+  not generic boilerplate.
+- **Graceful degradation:** if `GROQ_API_KEY` isn't set, `/diagnose` returns
+  immediately without touching the incident's status, rather than throwing.
+
 ## Build Phases
 
 | # | Phase | Status |
@@ -98,7 +154,7 @@ cosine similarity, computed in-memory rather than via pgvector.
 | 2 | Data Model Completion & Synthetic Incident Generation | ✅ |
 | 3 | MCP Tool Layer | ✅ |
 | 4 | Retrieval-Augmented Generation (Runbook Search) | ✅ |
-| 5 | Agent Reasoning Core (ReAct Loop) | ⬜ |
+| 5 | Agent Reasoning Core (ReAct Loop) | ✅ |
 | 6 | Approval Gating & Remediation Execution | ⬜ |
 | 7 | Authentication & RBAC | ⬜ |
 | 8 | Frontend Dashboard | ⬜ |
@@ -117,6 +173,10 @@ cosine similarity, computed in-memory rather than via pgvector.
   just with that one tool returning nothing. Set it as an environment
   variable named `VOYAGE_API_KEY` - never commit it or put it in
   `application.yml`.
+- A [Groq](https://console.groq.com) API key (free tier) - only needed for
+  `POST /incidents/{id}/diagnose` to actually run; without it, that endpoint
+  returns immediately saying so. Set it as `GROQ_API_KEY`, same rule as
+  above.
 
 ### Infrastructure
 
@@ -145,6 +205,10 @@ curl http://localhost:8080/incidents
 
 # Dev/demo-only: generates a realistic synthetic incident
 curl -X POST http://localhost:8080/incidents/simulate
+
+# Hand a diagnosed incident to the agent, then see its full reasoning trace
+curl -X POST http://localhost:8080/incidents/{id}/diagnose
+curl http://localhost:8080/incidents/{id}/decision-log
 ```
 
 On first startup, the app seeds `src/main/resources/runbooks/*.md` into the
@@ -172,11 +236,16 @@ tools via their real registered protocol handlers, against real Postgres):
   alias, which Postgres 17 rejects outright at connection time. `WatchtowerApplication.main()`
   forces `UTC` for the running app; the Surefire plugin config in `pom.xml`
   does the same for the test JVM (tests don't go through `main()`).
-- Spring's default `RestClient` (used by `VoyageEmbeddingClient`) picks an
-  HTTP client backed by Java NIO, which opens an internal loopback selector
-  pipe - the same class of bug as the JDK regression above, and it breaks in
-  the same sandboxed environments. `VoyageEmbeddingClient` explicitly uses
+- Spring's default `RestClient` picks an HTTP client backed by Java NIO,
+  which opens an internal loopback selector pipe - the same class of bug as
+  the JDK regression above, and it breaks in the same sandboxed
+  environments. Both `VoyageEmbeddingClient` and `GroqClient` explicitly use
   `SimpleClientHttpRequestFactory` (classic `HttpURLConnection`, no NIO) to
-  avoid it. Apply the same fix to any future outbound HTTP client (e.g. the
-  Anthropic API client in Phase 5) if it hits the identical
-  "Unable to establish loopback connection" error.
+  avoid it. Apply the same fix to any future outbound HTTP client that hits
+  the identical "Unable to establish loopback connection" error.
+- Jackson serializes `null` record fields as explicit JSON `null` by
+  default. Groq's chat completions API rejects that for optional
+  OpenAI-style message fields (e.g. `name` on a system message must be
+  *absent*, not `null`) with a 400. `GroqClient.ChatMessage` is annotated
+  `@JsonInclude(NON_NULL)` to omit unset fields entirely - worth checking
+  for any future request DTO sent to a strict third-party API.
