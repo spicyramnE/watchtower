@@ -36,4 +36,16 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ErrorResponse(
                 Instant.now(), HttpStatus.NOT_FOUND.value(), "Not Found", List.of(ex.getMessage())));
     }
+
+    /**
+     * Thrown by RemediationService when an incident's current status doesn't
+     * allow the requested transition (e.g. approving an incident that isn't
+     * AWAITING_APPROVAL). 409 Conflict is the correct status for "the
+     * request is valid, but the resource's current state disallows it."
+     */
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalState(IllegalStateException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(
+                Instant.now(), HttpStatus.CONFLICT.value(), "Conflict", List.of(ex.getMessage())));
+    }
 }

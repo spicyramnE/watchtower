@@ -5,11 +5,13 @@ import com.watchtower.watchtower.dto.CreateIncidentRequest;
 import com.watchtower.watchtower.dto.DecisionLogEntryResponse;
 import com.watchtower.watchtower.dto.DiagnosisResult;
 import com.watchtower.watchtower.dto.IncidentResponse;
+import com.watchtower.watchtower.dto.RejectIncidentRequest;
 import com.watchtower.watchtower.entity.Incident;
 import com.watchtower.watchtower.entity.IncidentStatus;
 import com.watchtower.watchtower.repository.AgentDecisionLogRepository;
 import com.watchtower.watchtower.service.IncidentService;
 import com.watchtower.watchtower.service.IncidentSimulationService;
+import com.watchtower.watchtower.service.RemediationService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -29,15 +31,18 @@ public class IncidentController {
     private final IncidentSimulationService incidentSimulationService;
     private final AgentReasoningService agentReasoningService;
     private final AgentDecisionLogRepository decisionLogRepository;
+    private final RemediationService remediationService;
 
     public IncidentController(IncidentService incidentService,
                                IncidentSimulationService incidentSimulationService,
                                AgentReasoningService agentReasoningService,
-                               AgentDecisionLogRepository decisionLogRepository) {
+                               AgentDecisionLogRepository decisionLogRepository,
+                               RemediationService remediationService) {
         this.incidentService = incidentService;
         this.incidentSimulationService = incidentSimulationService;
         this.agentReasoningService = agentReasoningService;
         this.decisionLogRepository = decisionLogRepository;
+        this.remediationService = remediationService;
     }
 
     @PostMapping("/incidents")
@@ -80,5 +85,22 @@ public class IncidentController {
         return decisionLogRepository.findByIncidentIdOrderByStepNumberAsc(id).stream()
                 .map(DecisionLogEntryResponse::from)
                 .toList();
+    }
+
+    @GetMapping("/incidents/awaiting-approval")
+    public List<IncidentResponse> listAwaitingApproval() {
+        return incidentService.listIncidents(IncidentStatus.AWAITING_APPROVAL).stream()
+                .map(IncidentResponse::from)
+                .toList();
+    }
+
+    @PostMapping("/incidents/{id}/approve")
+    public IncidentResponse approveIncident(@PathVariable Long id) {
+        return IncidentResponse.from(remediationService.approveRemediation(id));
+    }
+
+    @PostMapping("/incidents/{id}/reject")
+    public IncidentResponse rejectIncident(@PathVariable Long id, @Valid @RequestBody RejectIncidentRequest request) {
+        return IncidentResponse.from(remediationService.rejectRemediation(id, request.reason()));
     }
 }

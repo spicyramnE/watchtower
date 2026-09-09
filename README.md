@@ -2,7 +2,7 @@
 
 **Agentic AI CI/CD Incident Response Platform**
 
-**Progress: Phase 5 of 10 complete** — see [Build Phases](#build-phases) below for the full roadmap.
+**Progress: Phase 6 of 10 complete** — see [Build Phases](#build-phases) below for the full roadmap.
 
 Watchtower is an agentic AI incident-response backend for CI/CD pipelines. It ingests
 pipeline failures and production alerts, reasons over logs, pipeline history, and
@@ -57,7 +57,7 @@ The five tools:
 | `get_pipeline_history` | `PipelineHistoryService` (synthetic build/deploy outcomes) |
 | `search_runbook` | `RunbookSearchService` — Voyage AI embeddings + cosine similarity (see below) |
 | `propose_remediation` | `RemediationService` — moves an incident to `AWAITING_APPROVAL` |
-| `execute_remediation` | `RemediationService` — simulated execution; Phase 6 adds the human approval gate in front of it. **Never offered to the agent itself** — see Phase 5 notes below |
+| `execute_remediation` | `RemediationService` — simulated execution, only reachable via the human-gated `POST /incidents/{id}/approve` endpoint (Phase 6). **Never offered to the agent itself** — see Phase 5 notes below |
 
 ### RAG: why Voyage AI, and in-memory over pgvector
 
@@ -147,6 +147,40 @@ with a grounded diagnosis - the classic ReAct (Reason + Act) pattern.
 - **Graceful degradation:** if `GROQ_API_KEY` isn't set, `/diagnose` returns
   immediately without touching the incident's status, rather than throwing.
 
+### Approval gating: one unified decision log, not two
+
+Phase 6 adds the human side of the loop: `GET /incidents/awaiting-approval`,
+`POST /incidents/{id}/approve`, and `POST /incidents/{id}/reject`.
+
+- **Approve reuses execute_remediation's own guard rather than duplicating
+  it.** `RemediationService.approveRemediation` calls the same
+  `executeRemediation` method the MCP tool uses - so there is exactly one
+  place in the codebase that decides an incident is allowed to move to
+  `RESOLVED`, whether that call comes from a human clicking approve or
+  (structurally, even though the agent is never given the tool) anywhere
+  else. Nothing can execute without going through that single gate.
+- **Approve and reject write to the same `AgentDecisionLog` table the agent
+  writes to**, tagged `human_approval` / `human_rejection` instead of a real
+  tool name, continuing the step-number sequence the agent left off at. The
+  result is one continuous, chronological record of an incident's entire
+  history - agent reasoning and human governance interleaved - rather than
+  two separate logs a reader would have to cross-reference. This is what
+  `GET /incidents/{id}/decision-log` returns.
+- **Rejection requires a reason** (`RejectIncidentRequest.reason`, validated
+  non-blank) and that reason is what gets logged - satisfying the doc's "the
+  incident is marked REJECTED with the reviewer's reasoning captured"
+  without adding a new column to `Incident`, since the decision log already
+  captures free-text reasoning for every other step.
+- **No auth yet** - these endpoints are open, matching the doc's own
+  phasing ("via API for now"). Phase 7 adds JWT + the VIEWER/APPROVER role
+  check specifically on approve/reject.
+- **Verified end-to-end against the live Groq API**: a synthetic incident
+  taken through `simulate` → `diagnose` → `approve` produced the full
+  `NEW → DIAGNOSING → AWAITING_APPROVAL → RESOLVED` lifecycle in one run,
+  with a single 5-entry decision log spanning 3 agent evidence-gathering
+  steps, the proposal, and the human approval - exactly the doc's Phase 6
+  exit criteria.
+
 ## Build Phases
 
 | # | Phase | Status |
@@ -157,7 +191,7 @@ with a grounded diagnosis - the classic ReAct (Reason + Act) pattern.
 | 3 | MCP Tool Layer | ✅ |
 | 4 | Retrieval-Augmented Generation (Runbook Search) | ✅ |
 | 5 | Agent Reasoning Core (ReAct Loop) | ✅ |
-| 6 | Approval Gating & Remediation Execution | ⬜ |
+| 6 | Approval Gating & Remediation Execution | ✅ |
 | 7 | Authentication & RBAC | ⬜ |
 | 8 | Frontend Dashboard | ⬜ |
 | 9 | CI/CD & GCP Deployment | ⬜ |
@@ -211,6 +245,13 @@ curl -X POST http://localhost:8080/incidents/simulate
 # Hand a diagnosed incident to the agent, then see its full reasoning trace
 curl -X POST http://localhost:8080/incidents/{id}/diagnose
 curl http://localhost:8080/incidents/{id}/decision-log
+
+# Review and act on the agent's proposal
+curl http://localhost:8080/incidents/awaiting-approval
+curl -X POST http://localhost:8080/incidents/{id}/approve
+curl -X POST http://localhost:8080/incidents/{id}/reject \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"Too risky during business hours"}'
 ```
 
 On first startup, the app seeds `src/main/resources/runbooks/*.md` into the

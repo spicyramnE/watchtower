@@ -2,22 +2,27 @@ package com.watchtower.watchtower.service;
 
 import com.watchtower.watchtower.dto.RemediationExecutionResult;
 import com.watchtower.watchtower.dto.RemediationProposal;
+import com.watchtower.watchtower.entity.AgentDecisionLog;
 import com.watchtower.watchtower.entity.Incident;
 import com.watchtower.watchtower.entity.IncidentStatus;
 import com.watchtower.watchtower.entity.Severity;
 import com.watchtower.watchtower.exception.IncidentNotFoundException;
+import com.watchtower.watchtower.repository.AgentDecisionLogRepository;
 import com.watchtower.watchtower.repository.IncidentRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -26,11 +31,14 @@ class RemediationServiceTest {
     @Mock
     private IncidentRepository incidentRepository;
 
+    @Mock
+    private AgentDecisionLogRepository decisionLogRepository;
+
     private RemediationService remediationService;
 
     @BeforeEach
     void setUp() {
-        remediationService = new RemediationService(incidentRepository);
+        remediationService = new RemediationService(incidentRepository, decisionLogRepository);
     }
 
     @Test
@@ -88,6 +96,62 @@ class RemediationServiceTest {
         when(incidentRepository.findById(1L)).thenReturn(Optional.of(incident));
 
         assertThatThrownBy(() -> remediationService.executeRemediation(1L))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void approveRemediation_onAwaitingApproval_resolvesAndLogsTheApproval() {
+        Incident incident = new Incident("github-actions", "payments-service", Severity.HIGH, "{}");
+        incident.setStatus(IncidentStatus.AWAITING_APPROVAL);
+        incident.setProposedAction("Restart the deployment");
+        when(incidentRepository.findById(1L)).thenReturn(Optional.of(incident));
+        when(incidentRepository.save(any(Incident.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(decisionLogRepository.findByIncidentIdOrderByStepNumberAsc(any())).thenReturn(List.of());
+
+        Incident result = remediationService.approveRemediation(1L);
+
+        assertThat(result.getStatus()).isEqualTo(IncidentStatus.RESOLVED);
+
+        ArgumentCaptor<AgentDecisionLog> captor = ArgumentCaptor.forClass(AgentDecisionLog.class);
+        verify(decisionLogRepository).save(captor.capture());
+        assertThat(captor.getValue().getToolName()).isEqualTo("human_approval");
+        assertThat(captor.getValue().getReasoning()).contains("Restart the deployment");
+        assertThat(captor.getValue().getStepNumber()).isEqualTo(1);
+    }
+
+    @Test
+    void approveRemediation_withoutPendingProposal_throwsAndLogsNothing() {
+        Incident incident = new Incident("github-actions", "payments-service", Severity.HIGH, "{}");
+        when(incidentRepository.findById(1L)).thenReturn(Optional.of(incident));
+
+        assertThatThrownBy(() -> remediationService.approveRemediation(1L))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void rejectRemediation_onAwaitingApproval_marksRejectedAndLogsTheReason() {
+        Incident incident = new Incident("github-actions", "payments-service", Severity.HIGH, "{}");
+        incident.setStatus(IncidentStatus.AWAITING_APPROVAL);
+        when(incidentRepository.findById(1L)).thenReturn(Optional.of(incident));
+        when(incidentRepository.save(any(Incident.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(decisionLogRepository.findByIncidentIdOrderByStepNumberAsc(any())).thenReturn(List.of());
+
+        Incident result = remediationService.rejectRemediation(1L, "Too risky during business hours");
+
+        assertThat(result.getStatus()).isEqualTo(IncidentStatus.REJECTED);
+
+        ArgumentCaptor<AgentDecisionLog> captor = ArgumentCaptor.forClass(AgentDecisionLog.class);
+        verify(decisionLogRepository).save(captor.capture());
+        assertThat(captor.getValue().getToolName()).isEqualTo("human_rejection");
+        assertThat(captor.getValue().getReasoning()).contains("Too risky during business hours");
+    }
+
+    @Test
+    void rejectRemediation_withoutPendingProposal_throwsIllegalState() {
+        Incident incident = new Incident("github-actions", "payments-service", Severity.HIGH, "{}");
+        when(incidentRepository.findById(1L)).thenReturn(Optional.of(incident));
+
+        assertThatThrownBy(() -> remediationService.rejectRemediation(1L, "reason"))
                 .isInstanceOf(IllegalStateException.class);
     }
 }
