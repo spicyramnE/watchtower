@@ -2,6 +2,8 @@
 
 **Agentic AI CI/CD Incident Response Platform**
 
+**Progress: Phase 5 of 10 complete** — see [Build Phases](#build-phases) below for the full roadmap.
+
 Watchtower is an agentic AI incident-response backend for CI/CD pipelines. It ingests
 pipeline failures and production alerts, reasons over logs, pipeline history, and
 runbooks using a ReAct-style agent loop and the Model Context Protocol (MCP), and
