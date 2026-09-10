@@ -1,0 +1,156 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  JAVA_VERSION: "21"
+  NODE_VERSION: "20"
+  GCP_REGION: us-central1
+  SERVICE_NAME: watchtower
+
+jobs:
+  backend-test:
+    name: Backend build & test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: watchtower
+          POSTGRES_USER: watchtower_user
+          POSTGRES_PASSWORD: watchtower_dev_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U watchtower_user -d watchtower"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Run tests
+        run: ./mvnw verify -B
+        env:
+          TZ: UTC
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+
+  frontend-build:
+    name: Frontend build & lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  docker-build:
+    name: Build & push Docker image
+    needs: [backend-test, frontend-build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        if: env.GCP_PROJECT_ID != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        if: steps.auth.outcome == 'success'
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build image
+        run: |
+          docker build -t watchtower:${{ github.sha }} .
+
+      - name: Tag & push to Artifact Registry
+        if: steps.auth.outcome == 'success'
+        env:
+          IMAGE: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/watchtower/watchtower
+        run: |
+          docker tag watchtower:${{ github.sha }} $IMAGE:${{ github.sha }}
+          docker tag watchtower:${{ github.sha }} $IMAGE:latest
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
+
+  deploy:
+    name: Deploy to Cloud Run
+    needs: [docker-build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - id: auth
+        if: env.GCP_PROJECT_ID != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Deploy to Cloud Run
+        if: steps.auth.outcome == 'success'
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.GCP_REGION }}
+          image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/watchtower/watchtower:${{ github.sha }}
+          env_vars: |
+            SPRING_PROFILES_ACTIVE=prod
+          secrets: |
+            DATABASE_URL=DATABASE_URL:latest
+            DATABASE_USER=DATABASE_USER:latest
+            DATABASE_PASSWORD=DATABASE_PASSWORD:latest
+            VOYAGE_API_KEY=VOYAGE_API_KEY:latest
+            GROQ_API_KEY=GROQ_API_KEY:latest
+            JWT_SECRET=JWT_SECRET:latest

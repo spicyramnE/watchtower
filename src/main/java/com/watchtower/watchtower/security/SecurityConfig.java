@@ -78,6 +78,7 @@ public class SecurityConfig {
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/health").permitAll()
                         .requestMatchers("/mcp/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/incidents/*/approve", "/incidents/*/reject").hasRole("APPROVER")
                         .anyRequest().authenticated())
