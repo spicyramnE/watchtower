@@ -42,7 +42,9 @@ jobs:
           cache: maven
 
       - name: Run tests
-        run: ./mvnw verify -B
+        run: |
+          chmod +x mvnw
+          ./mvnw verify -B
         env:
           TZ: UTC
 

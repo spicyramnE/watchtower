@@ -36,6 +36,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const role = localStorage.getItem(STORAGE_KEYS.role) as Role | null;
     const username = localStorage.getItem(STORAGE_KEYS.username);
     if (token && role && username) {
+      // One-time hydration from localStorage after mount, to avoid a
+      // server/client mismatch (localStorage doesn't exist during SSR) -
+      // React's recommended pattern for this exact case, even though it's
+      // a synchronous setState inside the effect.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setState({ token, role, username });
     }
     setHydrated(true);

@@ -30,6 +30,11 @@ function ApprovalQueueContent() {
   }, []);
 
   useEffect(() => {
+    // Fetch-on-mount: load() is async and awaits the API call before
+    // touching state, so this isn't the synchronous-setState pattern the
+    // rule targets - it's the standard data-fetching effect React's own
+    // docs recommend.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
 
