@@ -2,7 +2,7 @@
 
 **Agentic AI CI/CD Incident Response Platform**
 
-**Progress: Phase 8 of 10 complete** — see [Build Phases](#build-phases) below for the full roadmap.
+**Progress: Phase 10 of 10 complete** — see [Build Phases](#build-phases) below for the full roadmap.
 
 Watchtower is an agentic AI incident-response backend for CI/CD pipelines. It ingests
 pipeline failures and production alerts, reasons over logs, pipeline history, and
@@ -272,6 +272,74 @@ decision-trace timeline, and an APPROVER-only approval queue.
   5th `human_approval` step appended to the same trace - all against the
   real Postgres-backed API, no mocked data.
 
+### CI/CD: GitHub Actions pipeline with Cloud Run deployment
+
+Phase 9 adds a production-ready CI/CD pipeline in `.github/workflows/ci.yml`
+and a multi-stage `Dockerfile`.
+
+- **The pipeline runs tests against real Postgres** - the backend job starts a
+  Postgres 17 service container (the same image as local dev) so every test
+  that touches the database hits a real one, matching what `./mvnw test` does
+  locally. The frontend job runs `npm run lint` and `npm run build` to catch
+  type errors and build failures.
+- **Docker build and Cloud Run deploy are conditional on GCP credentials** -
+  the `docker-build` and `deploy` jobs check for `secrets.GCP_PROJECT_ID`
+  before attempting authentication. Without those secrets, the CI half of the
+  pipeline (build + test) still runs on every push and PR, catching
+  regressions even if GCP isn't configured yet. This means the pipeline works
+  immediately on push without any setup, and GCP deployment activates when
+  you add the secrets.
+- **The Dockerfile uses a multi-stage build** - stage 1 (`eclipse-temurin:21-jdk`)
+  downloads dependencies and builds the fat JAR; stage 2 (`eclipse-temurin:21-jre`)
+  copies only the JAR into a minimal runtime image. A non-root `app` user runs
+  the process. `.dockerignore` excludes the frontend, `.git`, and docs from
+  the build context.
+- **Production config** (`application-prod.yml`) reads `DATABASE_URL`,
+  `DATABASE_USER`, `DATABASE_PASSWORD` from environment variables (injected as
+  Cloud Run secrets from GCP Secret Manager), and picks up `PORT` from
+  Cloud Run's own environment. `SPRING_PROFILES_ACTIVE=prod` activates it.
+- **Health check:** `GET /health` returns `{"status":"UP"}` without
+  authentication, giving Cloud Run (and any load balancer) a liveness probe
+  endpoint that doesn't need a JWT.
+
+### GCP deployment prerequisites (optional)
+
+The pipeline deploys to Cloud Run when these GitHub repository secrets are set:
+
+| Secret | Purpose |
+|--------|---------|
+| `GCP_PROJECT_ID` | GCP project ID |
+| `WIF_PROVIDER` | Workload Identity Federation provider (e.g. `projects/123/locations/global/workloadIdentityPools/github/providers/github`) |
+| `WIF_SERVICE_ACCOUNT` | Service account email with Cloud Run and Artifact Registry permissions |
+
+Cloud Run environment secrets (stored in GCP Secret Manager):
+`DATABASE_URL`, `DATABASE_USER`, `DATABASE_PASSWORD`, `VOYAGE_API_KEY`,
+`GROQ_API_KEY`, `JWT_SECRET`.
+
+Without these secrets, the CI pipeline still runs tests on every push and PR.
+
+### Test coverage
+
+Phase 10 brings the test suite to full coverage of every layer:
+
+| Layer | Test class | What it proves |
+|-------|-----------|----------------|
+| Unit | `VectorMathTest` | Cosine similarity: identical, orthogonal, opposite, scale-invariant, zero-vector, mismatched-length |
+| Unit | `EmbeddingCodecTest` | JSON round-trip for embedding vectors |
+| Unit | `LogServiceTest` | Synthetic logs are well-formed and varied |
+| Unit | `PipelineHistoryServiceTest` | Pipeline runs are well-formed and time-ordered |
+| Unit | `IncidentServiceTest` | CRUD service: create, get, list, list-with-filter, not-found |
+| Unit | `JwtServiceTest` | Token round-trip, expiration, tampering, wrong-secret, blank-secret isolation |
+| Unit | `RemediationServiceTest` | Propose, execute, approve, reject, and all their guard-clause rejections |
+| Unit | `RunbookSearchServiceTest` | Ranked results, irrelevant-query filtering, max-3 cap, unconfigured/unembedded graceful degradation |
+| Integration | `IncidentControllerTest` | Full HTTP lifecycle through MockMvc against real Postgres: CRUD, validation, simulation variety, approve/reject RBAC, real JWT token flow |
+| Integration | `AuthControllerTest` | Login happy paths, wrong password, unknown user, missing fields |
+| Integration | `HealthControllerTest` | Health endpoint accessible without authentication |
+| Integration | `AgentReasoningServiceTest` | ReAct loop: evidence-then-propose, iteration cap, plain-text response, execute_remediation block, unconfigured graceful degradation |
+| Integration | `WatchtowerMcpToolsTest` | All 5 tools registered via real MCP SDK, invoked through protocol handlers, propose-then-execute lifecycle |
+| Integration | `IncidentSimulationServiceTest` | Simulation produces persisted, valid, varied incidents |
+| Integration | `RunbookSeederTest` | Startup seeds 12+ runbooks with content and tags |
+
 ## Build Phases
 
 | # | Phase | Status |
@@ -285,8 +353,8 @@ decision-trace timeline, and an APPROVER-only approval queue.
 | 6 | Approval Gating & Remediation Execution | ✅ |
 | 7 | Authentication & RBAC | ✅ |
 | 8 | Frontend Dashboard | ✅ |
-| 9 | CI/CD & GCP Deployment | ⬜ |
-| 10 | Testing, Documentation & Interview Readiness | ⬜ |
+| 9 | CI/CD & GCP Deployment | ✅ |
+| 10 | Testing, Documentation & Interview Readiness | ✅ |
 
 ## Local Development Setup
 
@@ -390,6 +458,37 @@ tools via their real registered protocol handlers, against real Postgres):
 ```bash
 ./mvnw test
 ```
+
+### Building the Docker image locally
+
+```bash
+docker build -t watchtower:local .
+docker run --rm -p 8080:8080 \
+  -e SPRING_PROFILES_ACTIVE=prod \
+  -e DATABASE_URL=jdbc:postgresql://host.docker.internal:5432/watchtower \
+  -e DATABASE_USER=watchtower_user \
+  -e DATABASE_PASSWORD=watchtower_dev_password \
+  -e VOYAGE_API_KEY=$VOYAGE_API_KEY \
+  -e GROQ_API_KEY=$GROQ_API_KEY \
+  watchtower:local
+```
+
+## API Reference
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/auth/login` | None | Returns JWT + role for valid credentials |
+| `GET` | `/health` | None | Liveness probe (`{"status":"UP"}`) |
+| `POST` | `/incidents` | Any | Create a new incident |
+| `GET` | `/incidents` | Any | List incidents (optional `?status=` filter) |
+| `GET` | `/incidents/{id}` | Any | Get a single incident |
+| `POST` | `/incidents/simulate` | Any | Generate a synthetic incident |
+| `POST` | `/incidents/{id}/diagnose` | Any | Run the ReAct agent on this incident |
+| `GET` | `/incidents/{id}/decision-log` | Any | Get the full reasoning + governance trace |
+| `GET` | `/incidents/awaiting-approval` | Any | List incidents pending human review |
+| `POST` | `/incidents/{id}/approve` | APPROVER | Approve and execute the proposed remediation |
+| `POST` | `/incidents/{id}/reject` | APPROVER | Reject with a reason |
+| `POST` | `/mcp` | None | MCP Streamable HTTP transport |
 
 ### Windows notes
 
