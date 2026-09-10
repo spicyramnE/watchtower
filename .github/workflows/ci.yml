@@ -80,11 +80,35 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-  docker-build:
-    name: Build & push Docker image
+  # The `secrets` context can't be used in an `if:` condition, so whether GCP
+  # is configured has to be resolved into a job output that later jobs CAN
+  # gate on. Gating at job level (rather than per-step) means the deploy job
+  # reports as genuinely skipped instead of green-but-empty.
+  check-gcp-config:
+    name: Check GCP configuration
     needs: [backend-test, frontend-build]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+
+    steps:
+      - id: check
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          if [ -n "$GCP_PROJECT_ID" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "GCP configured - image push and Cloud Run deploy will run." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "GCP secrets not set - building the image to validate the Dockerfile, but skipping push and deploy." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  docker-build:
+    name: Build & push Docker image
+    needs: [check-gcp-config]
+    runs-on: ubuntu-latest
 
     permissions:
       contents: read
@@ -93,25 +117,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Built unconditionally: proves the Dockerfile is valid on every push,
+      # even when there's nowhere to push it to.
+      - name: Build image
+        run: docker build -t watchtower:${{ github.sha }} .
+
       - id: auth
-        if: env.GCP_PROJECT_ID != ''
+        if: needs.check-gcp-config.outputs.configured == 'true'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
-        env:
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
 
       - name: Configure Docker for Artifact Registry
-        if: steps.auth.outcome == 'success'
+        if: needs.check-gcp-config.outputs.configured == 'true'
         run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
 
-      - name: Build image
-        run: |
-          docker build -t watchtower:${{ github.sha }} .
-
       - name: Tag & push to Artifact Registry
-        if: steps.auth.outcome == 'success'
+        if: needs.check-gcp-config.outputs.configured == 'true'
         env:
           IMAGE: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/watchtower/watchtower
         run: |
@@ -122,9 +145,9 @@ jobs:
 
   deploy:
     name: Deploy to Cloud Run
-    needs: [docker-build]
+    needs: [check-gcp-config, docker-build]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: needs.check-gcp-config.outputs.configured == 'true'
 
     permissions:
       contents: read
@@ -132,16 +155,12 @@ jobs:
 
     steps:
       - id: auth
-        if: env.GCP_PROJECT_ID != ''
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
-        env:
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
 
       - name: Deploy to Cloud Run
-        if: steps.auth.outcome == 'success'
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ env.SERVICE_NAME }}
