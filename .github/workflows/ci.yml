@@ -11,7 +11,7 @@ env:
   NODE_VERSION: "20"
   RESOURCE_GROUP: watchtower-rg
   CONTAINER_APP_NAME: watchtower
-  ACR_LOGIN_SERVER: watchtoweracr.azurecr.io
+  ACR_LOGIN_SERVER: watchtoweracr2026rv.azurecr.io
 
 jobs:
   backend-test:
