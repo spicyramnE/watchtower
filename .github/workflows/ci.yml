@@ -9,8 +9,9 @@ on:
 env:
   JAVA_VERSION: "21"
   NODE_VERSION: "20"
-  GCP_REGION: us-central1
-  SERVICE_NAME: watchtower
+  RESOURCE_GROUP: watchtower-rg
+  CONTAINER_APP_NAME: watchtower
+  ACR_LOGIN_SERVER: watchtoweracr.azurecr.io
 
 jobs:
   backend-test:
@@ -80,12 +81,12 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-  # The `secrets` context can't be used in an `if:` condition, so whether GCP
-  # is configured has to be resolved into a job output that later jobs CAN
-  # gate on. Gating at job level (rather than per-step) means the deploy job
-  # reports as genuinely skipped instead of green-but-empty.
-  check-gcp-config:
-    name: Check GCP configuration
+  # The `secrets` context can't be used in an `if:` condition, so whether
+  # Azure is configured has to be resolved into a job output that later jobs
+  # CAN gate on. Gating at job level (rather than per-step) means the deploy
+  # job reports as genuinely skipped instead of green-but-empty.
+  check-azure-config:
+    name: Check Azure configuration
     needs: [backend-test, frontend-build]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -95,19 +96,19 @@ jobs:
     steps:
       - id: check
         env:
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
         run: |
-          if [ -n "$GCP_PROJECT_ID" ]; then
+          if [ -n "$AZURE_CLIENT_ID" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
-            echo "GCP configured - image push and Cloud Run deploy will run." >> "$GITHUB_STEP_SUMMARY"
+            echo "Azure configured - image push and Container Apps deploy will run." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "GCP secrets not set - building the image to validate the Dockerfile, but skipping push and deploy." >> "$GITHUB_STEP_SUMMARY"
+            echo "Azure secrets not set - building the image to validate the Dockerfile, but skipping push and deploy." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   docker-build:
     name: Build & push Docker image
-    needs: [check-gcp-config]
+    needs: [check-azure-config]
     runs-on: ubuntu-latest
 
     permissions:
@@ -122,21 +123,21 @@ jobs:
       - name: Build image
         run: docker build -t watchtower:${{ github.sha }} .
 
-      - id: auth
-        if: needs.check-gcp-config.outputs.configured == 'true'
-        uses: google-github-actions/auth@v2
+      - uses: azure/login@v2
+        if: needs.check-azure-config.outputs.configured == 'true'
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Configure Docker for Artifact Registry
-        if: needs.check-gcp-config.outputs.configured == 'true'
-        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+      - name: Log in to Azure Container Registry
+        if: needs.check-azure-config.outputs.configured == 'true'
+        run: az acr login --name ${{ env.ACR_LOGIN_SERVER }}
 
-      - name: Tag & push to Artifact Registry
-        if: needs.check-gcp-config.outputs.configured == 'true'
+      - name: Tag & push to Azure Container Registry
+        if: needs.check-azure-config.outputs.configured == 'true'
         env:
-          IMAGE: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/watchtower/watchtower
+          IMAGE: ${{ env.ACR_LOGIN_SERVER }}/watchtower
         run: |
           docker tag watchtower:${{ github.sha }} $IMAGE:${{ github.sha }}
           docker tag watchtower:${{ github.sha }} $IMAGE:latest
@@ -144,34 +145,29 @@ jobs:
           docker push $IMAGE:latest
 
   deploy:
-    name: Deploy to Cloud Run
-    needs: [check-gcp-config, docker-build]
+    name: Deploy to Azure Container Apps
+    needs: [check-azure-config, docker-build]
     runs-on: ubuntu-latest
-    if: needs.check-gcp-config.outputs.configured == 'true'
+    if: needs.check-azure-config.outputs.configured == 'true'
 
     permissions:
       contents: read
       id-token: write
 
     steps:
-      - id: auth
-        uses: google-github-actions/auth@v2
+      - uses: azure/login@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy to Cloud Run
-        uses: google-github-actions/deploy-cloudrun@v2
-        with:
-          service: ${{ env.SERVICE_NAME }}
-          region: ${{ env.GCP_REGION }}
-          image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/watchtower/watchtower:${{ github.sha }}
-          env_vars: |
-            SPRING_PROFILES_ACTIVE=prod
-          secrets: |
-            DATABASE_URL=DATABASE_URL:latest
-            DATABASE_USER=DATABASE_USER:latest
-            DATABASE_PASSWORD=DATABASE_PASSWORD:latest
-            VOYAGE_API_KEY=VOYAGE_API_KEY:latest
-            GROQ_API_KEY=GROQ_API_KEY:latest
-            JWT_SECRET=JWT_SECRET:latest
+      # App secrets (DATABASE_URL, GROQ_API_KEY, etc.) live on the Container
+      # App itself, set once during initial provisioning - they persist
+      # across revisions, so CI only ever points the app at a new image, it
+      # never re-supplies secret values.
+      - name: Point Container App at the new image
+        run: |
+          az containerapp update \
+            --name ${{ env.CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_LOGIN_SERVER }}/watchtower:${{ github.sha }}
