@@ -39,5 +39,9 @@ jwt:
   secret: ${JWT_SECRET:}
   expiration-minutes: 60
 
+github:
+  webhook:
+    secret: ${GITHUB_WEBHOOK_SECRET:}
+
 server:
   port: 8080

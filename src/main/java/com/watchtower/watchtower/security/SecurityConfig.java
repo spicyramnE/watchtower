@@ -35,7 +35,9 @@ import java.util.List;
  * Only approve/reject are role-gated (APPROVER) - every other /incidents/**
  * route just needs a valid, authenticated user (VIEWER or APPROVER), per the
  * doc's role table. /mcp/** stays open: it's the agent's own in-process tool
- * surface, not part of this phase's user-facing auth scope.
+ * surface, not part of this phase's user-facing auth scope. /webhooks/github
+ * is also open - GitHub can't send a JWT - and relies entirely on
+ * GitHubWebhookVerifier's HMAC signature check instead of Spring Security.
  */
 @Configuration
 public class SecurityConfig {
@@ -79,6 +81,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
                         .requestMatchers(HttpMethod.GET, "/health").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/webhooks/github").permitAll()
                         .requestMatchers("/mcp/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/incidents/*/approve", "/incidents/*/reject").hasRole("APPROVER")
                         .anyRequest().authenticated())
