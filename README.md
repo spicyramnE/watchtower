@@ -38,7 +38,7 @@ Every step — agent and human — writes to one continuous audit log. No cross-
 
 ## Architecture
 
-![Architecture Diagram](./archidiagram.jpeg)
+![Architecture Diagram](./archidiagram.jpg)
 
 ## Tech Stack
 
