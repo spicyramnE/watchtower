@@ -38,23 +38,7 @@ Every step — agent and human — writes to one continuous audit log. No cross-
 
 ## Architecture
 
-```
-                    ┌──────────────────────────────────────────────────┐
-┌──────────────┐    │  Spring Boot 4 · Java 21                        │
-│  Next.js 16  │    │                                                  │
-│  Dashboard   │───▶│  REST API ──▶ AgentReasoningService (ReAct loop) │
-│  :3000       │    │  JWT Auth     ├─ get_recent_logs                 │
-└──────────────┘    │               ├─ get_pipeline_history            │
-                    │               ├─ search_runbook (Voyage AI RAG)  │
-                    │               └─ propose_remediation             │
-                    │                  ✗ execute_remediation (blocked)  │
-                    │                                                  │
-                    │  ┌──────────┐  ┌─────────┐  ┌────────────────┐  │
-                    │  │ Groq API │  │ Voyage  │  │ PostgreSQL 17  │  │
-                    │  │ (LLM)    │  │ (embed) │  │ (Docker)       │  │
-                    │  └──────────┘  └─────────┘  └────────────────┘  │
-                    └──────────────────────────────────────────────────┘
-```
+![Architecture Diagram](./archidiagram.jpeg)
 
 ## Tech Stack
 
