@@ -2,6 +2,8 @@
 
 An agentic AI platform that diagnoses CI/CD pipeline failures — and never executes a fix without a human saying yes.
 
+**Live:** [watchtower.redsmoke-fdc59300.eastasia.azurecontainerapps.io](https://watchtower.redsmoke-fdc59300.eastasia.azurecontainerapps.io) — runs on Azure Container Apps' free tier, which scales to zero when idle. The first request after a quiet period takes 30–50 seconds to cold-start; hit `/health` first if you want it warmed up before clicking around.
+
 <!-- Screenshots: drop PNGs into docs/screenshots/ and uncomment these lines
 ![Incident list](docs/screenshots/incident-list.png)
 ![Decision trace](docs/screenshots/decision-trace.png)
@@ -65,7 +67,7 @@ Every step — agent and human — writes to one continuous audit log. No cross-
 | Tool Protocol | Model Context Protocol (MCP) | Real tool-calling standard, not simulated |
 | Auth | JWT (HS256) + BCrypt | Stateless, role claim in token, no DB round-trip for authorization |
 | Frontend | Next.js 16, TypeScript, Tailwind | Decision-trace timeline is the centerpiece |
-| CI/CD | GitHub Actions → Docker → GCP Cloud Run | Tests against real Postgres in CI |
+| CI/CD | GitHub Actions → Docker → Azure Container Apps | Tests against real Postgres in CI |
 
 ## Limitations
 
@@ -76,6 +78,7 @@ These are deliberate scope choices, not things nobody thought about:
 - **In-memory vector search.** 12 runbooks don't justify pgvector — a linear scan over a dozen vectors is microseconds. pgvector is the documented upgrade path.
 - **Simulated execution.** "Execute remediation" changes a database status. In production this would call kubectl, restart a service, or trigger a rollback.
 - **Redis provisioned but unused.** Docker Compose includes it for future caching; nothing reads from it yet.
+- **Scale-to-zero cold starts.** The live deployment scales down when idle to stay on Azure's free tier — the first request after inactivity takes 30–50 seconds while a new replica spins up.
 
 ## Running Locally
 
